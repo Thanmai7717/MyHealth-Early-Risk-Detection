@@ -163,22 +163,8 @@ try:
     col1.metric("XGBoost", "94.80%") 
     col2.metric("Lasso", "92.20%")   
     st.sidebar.divider()
+#sidebar
 
-    # --- THE JSON UPLOADER FIX ---
-    # We added 'json' to the type list here
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload Patient Record (JSON)", 
-        type=['pdf', 'png', 'jpg', 'jpeg', 'json']
-    )
-
-    if uploaded_file:
-        st.sidebar.success(f"✅ {uploaded_file.name} uploaded!")
-        
-        # If you upload that specific Adrianna_Rosa JSON file:
-        if uploaded_file.name.endswith('.json'):
-            raw_data = json.load(uploaded_file)
-            with st.sidebar.expander("🔍 View Record Details"):
-                st.json(raw_data) # This makes the JSON look clean and clickable
     st.sidebar.title("👤 MyHealth Dashboard")
 
     with st.sidebar.expander("🔐 System Login (Demo Only)"):
