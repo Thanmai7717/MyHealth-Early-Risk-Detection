@@ -45,6 +45,7 @@ try:
     df_p_chronic['FULL_NAME'] = df_p_chronic['FIRST'] + " " + df_p_chronic['LAST']
 
     # --- SIDEBAR ---
+    # --- SIDEBAR ---
     st.sidebar.title("👤 MyHealth Dashboard")
     
     with st.sidebar.expander("🔐 System Login (Demo Only)"):
@@ -59,6 +60,15 @@ try:
 
     exercise_goal = st.sidebar.slider("Weekly Exercise (Minutes)", 0, 300, 150)
     potential_impact = exercise_goal / 30 
+
+    st.sidebar.divider()
+    st.sidebar.subheader("🏆 Model Accuracy")
+    
+    col1, col2 = st.sidebar.columns(2)
+    col1.metric("XGBoost", "94.80%") 
+    col2.metric("Lasso", "92.20%")   
+    st.sidebar.divider()
+    
 
     uploaded_file = st.sidebar.file_uploader("Add Hospital Visit Summary", type=['pdf', 'png', 'jpg', 'jpeg'])
     doc_risk_alert = True if uploaded_file else False
