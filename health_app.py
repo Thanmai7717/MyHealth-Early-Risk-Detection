@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import pickle        
+import xgboost as xgb
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="MyHealth Personal Dashboard", page_icon="👤", layout="wide")
