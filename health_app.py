@@ -66,9 +66,13 @@ try:
     user_c = df_c[df_c['PATIENT'] == p_id]
     chronic_display = user_c[user_c['DESCRIPTION'].str.contains('|'.join(CHRONIC_LIST), case=False, na=False)]
 
-    def get_latest_vital(desc):
-        res = user_o[user_o['DESCRIPTION'].str.contains(desc, case=False, na=False)]
-        return res.iloc[-1]['VALUE'] if not res.empty else "N/A"
+   # NEW VERSION (More flexible)
+def get_latest_vital(desc):
+    # This searches the 'DESCRIPTION' column for your keyword (like 'Systolic')
+    res = user_o[user_o['DESCRIPTION'].str.lower().str.contains(desc.lower(), na=False)]
+    if not res.empty:
+        return res.iloc[-1]['VALUE']
+    return "N/A"
 
     current_bp = get_latest_vital("Systolic")
     current_gl = get_latest_vital("Glucose")
