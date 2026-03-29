@@ -46,11 +46,11 @@ try:
     df_p_chronic = df_p[df_p['Id'].isin(chronic_patient_ids)].copy()
     df_p_chronic['FULL_NAME'] = df_p_chronic['FIRST'] + " " + df_p_chronic['LAST']
 
-    # --- SIDEBAR ---
-    # --- SIDEBAR ---
+    # --- SIDEBAR (Updated for SLU Project Demo) ---
     st.sidebar.title("👤 MyHealth Dashboard")
     
     with st.sidebar.expander("🔐 System Login (Demo Only)"):
+        # This part keeps your profile selection working
         patient_name = st.sidebar.selectbox("Select Profile", options=df_p_chronic['FULL_NAME'].sort_values())
     
     selected_row = df_p_chronic[df_p_chronic['FULL_NAME'] == patient_name].iloc[0]
@@ -60,8 +60,17 @@ try:
     st.sidebar.markdown(f"**Logged in as:** {patient_name}")
     st.sidebar.divider()
 
+    # --- MODEL ACCURACY SECTION ---
+    # This shows your 94.8% and 92.2% scores as clean metrics
+    st.sidebar.subheader("🏆 Model Performance")
+    col1, col2 = st.sidebar.columns(2)
+    col1.metric("XGBoost", "94.80%") 
+    col2.metric("Lasso", "92.20%")   
+    st.sidebar.divider()
+
+    # --- USER GOALS ---
     exercise_goal = st.sidebar.slider("Weekly Exercise (Minutes)", 0, 300, 150)
-    potential_impact = exercise_goal / 30 
+    potential_impact = exercise_goal / 30
 
     st.sidebar.divider()
     st.sidebar.subheader("🏆 Model Accuracy")
