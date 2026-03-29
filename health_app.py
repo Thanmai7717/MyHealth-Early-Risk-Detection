@@ -15,7 +15,7 @@ st.markdown("""
 @st.cache_data
 def load_data():
     p = pd.read_csv('patients.csv')
-    o = pd.read_csv('observations.csv')
+    pd.read_csv('observations_small.csv')
     c = pd.read_csv('conditions.csv')
     e = pd.read_csv('encounters.csv')
     return p, o, c, e
