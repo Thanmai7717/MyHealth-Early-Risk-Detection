@@ -175,7 +175,7 @@ try:
     st.sidebar.divider()
 
     uploaded_file = st.sidebar.file_uploader("Add Hospital Visit Summary",
-                                              type=['pdf', 'png', 'jpg', 'jpeg'])
+                                              type=['pdf','json','png', 'jpg', 'jpeg'])
 
     tab = st.sidebar.radio("My Navigation",
               ["Home", "My History", "Health Check", "Model Insights", "Doctor Prep", "My Reports"])
