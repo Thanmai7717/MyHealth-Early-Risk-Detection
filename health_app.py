@@ -310,6 +310,33 @@ try:
         st.write(f"- Blood Pressure: {current_bp} mmHg")
         st.write(f"- Glucose: {current_gl} mg/dL")
 
+    # --- FINAL UPLOAD & NOTIFICATION LOGIC ---
+if uploaded_file is not None:
+    # This creates the "Personal Update" popup in the bottom right corner
+    st.toast(f"🔔 New data detected in: '{uploaded_file.name}'", icon='👤')
+    
+    # Adds a separator line on the main page
+    st.divider()
+    
+    # 1. Handle the Patient Summary Image you just downloaded
+    if uploaded_file.name.endswith(('png', 'jpg', 'jpeg')):
+        st.info(f"📄 Document added: {uploaded_file.name}")
+        st.image(uploaded_file, caption="Patient Summary Report (Scanned)")
+
+    # 2. Handle the JSON data (like the John Doe sample)
+    elif uploaded_file.name.endswith('.json'):
+        try:
+            data = json.load(uploaded_file)
+            st.success(f"✅ Patient Data Loaded: {uploaded_file.name}")
+            with st.expander("🔍 View Uploaded Patient Details", expanded=True):
+                st.json(data)
+        except Exception as e:
+            st.error(f"Error reading JSON: {e}")
+
+    # 3. Handle PDFs
+    elif uploaded_file.name.endswith('.pdf'):
+        st.warning("PDF detected. Manual review required for clinical validation.")
+
     # ── TAB: MY REPORTS ───────────────────────────────────────
     elif tab == "My Reports":
         st.title("📂 My Reports")
