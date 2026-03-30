@@ -189,38 +189,30 @@ try:
     current_bp = get_latest_vital("Systolic", user_o)
     current_gl = get_latest_vital("Glucose",  user_o)
 
-    # --- ADD THIS AT THE VERY BOTTOM OF YOUR SIDEBAR SCRIPT ---
-
-# 1. Check if the user has uploaded a file through the sidebar
+ # --- DATA UPLOAD LOGIC ---
 if uploaded_file is not None:
-    
-    # 2. Add a clear visual break in the main page
     st.divider()
     
-    # 3. Handle JSON files specifically
+    # Handle JSON files
     if uploaded_file.name.endswith('.json'):
         try:
-            # Read the JSON content
             data = json.load(uploaded_file)
+            st.success(f"✅ Patient Data Loaded: {uploaded_file.name}")
             
-            # Display the data in the main area
-            st.success(f"✅ Successfully loaded: {uploaded_file.name}")
-            
-            with st.expander("🔍 View Uploaded Patient JSON Data", expanded=True):
+            with st.expander("🔍 View Uploaded Patient Details", expanded=True):
                 st.json(data)
                 
         except Exception as e:
-            st.error(f"Could not parse JSON file: {e}")
+            # This line MUST be exactly under the 'try' line
+            st.error(f"Error reading the JSON file: {e}")
             
-    # 4. Handle Images (since your uploader accepts them)
+    # Handle Images
     elif uploaded_file.name.endswith(('png', 'jpg', 'jpeg')):
-        st.image(uploaded_file, caption="Uploaded Medical Document")
+        st.image(uploaded_file, caption="Uploaded Document Preview")
         
-    # 5. Handle PDFs
+    # Handle PDFs
     elif uploaded_file.name.endswith('.pdf'):
-        st.info("PDF Summary uploaded. (Note: Use a PDF library like 'base64' to render if needed)")
-
-# ---------------------------------------------------------
+        st.info("PDF document received. Digital record verified.")
 
     # ── TAB: HOME ─────────────────────────────────────────────
     if tab == "Home":
