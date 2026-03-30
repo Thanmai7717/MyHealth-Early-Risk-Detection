@@ -188,33 +188,8 @@ try:
 
     current_bp = get_latest_vital("Systolic", user_o)
     current_gl = get_latest_vital("Glucose",  user_o)
-
- # --- DATA UPLOAD LOGIC ---
-if uploaded_file is not None:
-    st.divider()
     
-    # Handle JSON files
-    if uploaded_file.name.endswith('.json'):
-        try:
-            data = json.load(uploaded_file)
-            st.success(f"✅ Patient Data Loaded: {uploaded_file.name}")
-            
-            with st.expander("🔍 View Uploaded Patient Details", expanded=True):
-                st.json(data)
-                
-        except Exception as e:
-            # This line MUST be exactly under the 'try' line
-            st.error(f"Error reading the JSON file: {e}")
-            
-    # Handle Images
-    elif uploaded_file.name.endswith(('png', 'jpg', 'jpeg')):
-        st.image(uploaded_file, caption="Uploaded Document Preview")
-        
-    # Handle PDFs
-    elif uploaded_file.name.endswith('.pdf'):
-        st.info("PDF document received. Digital record verified.")
-
-    # ── TAB: HOME ─────────────────────────────────────────────
+   # ── TAB: HOME ─────────────────────────────────────────────
     if tab == "Home":
         st.title(f"👋 Hello, {first_name}!")
         if exercise_goal > 0:
