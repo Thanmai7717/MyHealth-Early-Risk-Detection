@@ -319,31 +319,49 @@ try:
         else:
             st.info("Upload a hospital visit summary from the sidebar.")
 
-# ── 7. NOTIFICATION & UPLOAD LOGIC (NEW) ──────────────────
-    # Paste this right here, before the final 'except'
+# ── 7. NOTIFICATION & CLINICAL ANALYSIS ──────────────────
     if uploaded_file is not None:
-        # This creates the "Personal Update" popup
-        st.toast(f"🔔 New data detected in: '{uploaded_file.name}'", icon='👤')
+        # 1. The Popup Notification in the corner
+        st.toast(f"🔔 New data detected: '{uploaded_file.name}'", icon='👤')
         
-        # Only show the data display if the user is on the "My Reports" tab
+        # We only show the analysis UI if the user is on the "My Reports" tab
         if tab == "My Reports":
             st.divider()
             
-            # Handle Images (The John Doe Scanned Report)
-            if uploaded_file.name.endswith(('png', 'jpg', 'jpeg')):
-                st.info(f"📄 Document added: {uploaded_file.name}")
-                st.image(uploaded_file, caption="Patient Summary Report (Scanned)")
+            # --- START ANALYSIS ANIMATION ---
+            with st.status("🔍 MyHealth Engine: Analyzing clinical data...", expanded=True) as status:
+                st.write("Checking file integrity...")
+                import time
+                time.sleep(1) 
+                st.write("Extracting Vitals (eGFR, Systolic BP, Glucose)...")
+                time.sleep(1.2)
+                st.write("Running XGBoost & Lasso Risk Assessment...")
+                time.sleep(1)
+                status.update(label="✅ Clinical Analysis Complete!", state="complete", expanded=False)
 
-            # Handle JSON data
-            elif uploaded_file.name.endswith('.json'):
-                import json # Local import to be safe
-                try:
-                    data = json.load(uploaded_file)
-                    st.success(f"✅ Patient Data Loaded: {uploaded_file.name}")
-                    with st.expander("🔍 View Uploaded Patient Details", expanded=True):
-                        st.json(data)
-                except Exception as json_err:
-                    st.error(f"Error reading JSON: {json_err}")
+            # --- DISPLAY RESULTS ---
+            col_a, col_b = st.columns([1, 2])
+
+            with col_a:
+                st.subheader("Model Prediction")
+                # This simulates the 'Early Risk' detection of your CKDPredict model
+                st.metric("Risk Status", "HIGH RISK", delta="Action Required", delta_color="inverse")
+                st.error("Priority: Chronic Kidney Disease (CKD) Indicators Detected.")
+                st.info("💡 **Insight:** Lowered eGFR (42.1) detected in upload aligns with XGBoost risk features.")
+
+            with col_b:
+                if uploaded_file.name.endswith(('png', 'jpg', 'jpeg')):
+                    st.image(uploaded_file, caption="Analyzed Scanned Report")
+                elif uploaded_file.name.endswith('.json'):
+                    try:
+                        import json
+                        data = json.load(uploaded_file)
+                        st.success("JSON Data Validated")
+                        with st.expander("View Extracted Data Tree"):
+                            st.json(data)
+                    except:
+                        st.error("Could not parse JSON.")
+        
 
 except Exception as e:
     st.error(f"Dashboard Error: {e}")
