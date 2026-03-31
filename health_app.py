@@ -312,12 +312,38 @@ try:
 
     # ── TAB: MY REPORTS ───────────────────────────────────────
     elif tab == "My Reports":
-        st.title("📂 My Reports")
-        if uploaded_file:
-            st.success("File uploaded successfully!")
-            st.write(f"Filename: {uploaded_file.name}")
-        else:
-            st.info("Upload a hospital visit summary from the sidebar.")
+        st.title("📄 Export My Health Summary")
+        st.write("Download a summary of your California health records to share with your doctor.")
+        
+        # 1. Generate the report text
+        # We pull these variables from the 'selected_row' and 'user_o' data you already have
+        report_text = f"""
+MYHEALTH DASHBOARD REPORT
+-------------------------
+Patient: {patient_name}
+Location: California, USA
+
+LATEST VITALS:
+- Blood Pressure: {current_bp} mmHg
+- Glucose: {current_gl} mg/dL
+
+ACTIVE CHRONIC CONDITIONS:
+"""
+        # Add conditions to the text
+        for cond in chronic_display['DESCRIPTION'].tolist():
+            report_text += f"- {cond}\n"
+
+        # 2. Display the Preview (This creates that clean dark box look)
+        st.markdown("**Preview your report:**")
+        st.code(report_text, language="text")
+
+        # 3. Add the Download Button
+        st.download_button(
+            label="📥 Download as Text File",
+            data=report_text,
+            file_name=f"{patient_name}_health_summary.txt",
+            mime="text/plain"
+        )
 
 # ── 7. NOTIFICATION & CLINICAL ANALYSIS ──────────────────
     if uploaded_file is not None:
