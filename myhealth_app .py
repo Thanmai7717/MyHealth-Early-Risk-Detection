@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import json
 
 # 1. PAGE SETUP
 st.set_page_config(page_title="MyHealth Personal Dashboard", page_icon="👤", layout="wide")
@@ -14,6 +15,7 @@ st.markdown("""
 
 @st.cache_data
 def load_data():
+    # Note: Ensure these files exist in your local directory
     p = pd.read_csv('patients.csv')
     o = pd.read_csv('observations.csv')
     c = pd.read_csv('conditions.csv')
@@ -30,35 +32,40 @@ try:
     df_p_chronic = df_p[df_p['Id'].isin(chronic_patient_ids)].copy()
     df_p_chronic['FULL_NAME'] = df_p_chronic['FIRST'] + " " + df_p_chronic['LAST']
 
-    # --- SIDEBAR (Updated for One-Patient Experience) ---
+    # --- SIDEBAR ---
     st.sidebar.title("👤 MyHealth Dashboard")
     
-    # Hidden Selection for Demo (Simulates a Login)
     with st.sidebar.expander("🔐 System Login (Demo Only)"):
         patient_name = st.selectbox("Select Profile to Load", options=df_p_chronic['FULL_NAME'].sort_values())
     
-    # Identifying the selected patient
     selected_row = df_p_chronic[df_p_chronic['FULL_NAME'] == patient_name].iloc[0]
     p_id = selected_row['Id']
     first_name = selected_row['FIRST']
     
-    # Once logged in, show the simple account name
     st.sidebar.markdown(f"**Logged in as:** {patient_name}")
     st.sidebar.divider()
 
-    # NEW FEATURE: HEALTH GOAL SIMULATOR
     st.sidebar.subheader("🏃 My Activity Goal")
     exercise_goal = st.sidebar.slider("Weekly Exercise (Minutes)", 0, 300, 150)
     potential_impact = exercise_goal / 30 
     
-    # FILE UPLOAD SECTION
+    # --- FILE UPLOAD SECTION WITH JSON SUPPORT ---
     st.sidebar.subheader("📤 My Medical Records")
     uploaded_file = st.sidebar.file_uploader("Add Hospital Visit Summary", type=['pdf', 'png', 'jpg', 'jpeg', 'json'])
     
     doc_risk_alert = False
+    uploaded_json_data = None
+
     if uploaded_file is not None:
-        st.sidebar.success("Document added!")
+        st.sidebar.success(f"File '{uploaded_file.name}' added!")
         doc_risk_alert = True 
+
+        # If the file is JSON, parse it immediately
+        if uploaded_file.name.endswith('.json'):
+            try:
+                uploaded_json_data = json.load(uploaded_file)
+            except Exception as json_err:
+                st.sidebar.error(f"Error parsing JSON: {json_err}")
 
     # --- DATA FETCHING ---
     user_o = df_o[df_o['PATIENT'] == p_id].sort_values('DATE')
@@ -133,7 +140,16 @@ try:
     # TAB 5: MY REPORTS
     # ---------------------------------------------------------
     elif tab == "My Reports":
-        st.title("📄 Export My Health Summary")
+        st.title("📄 Health Records & Summary")
+        
+        # New Feature: Visualizing JSON Data
+        if uploaded_json_data:
+            with st.expander("📂 View Uploaded Digital Record (JSON)", expanded=True):
+                st.write("Below is the structured data from your uploaded JSON file.")
+                st.json(uploaded_json_data)
+        
+        st.divider()
+        st.subheader("Export My Health Summary")
         st.write("Download a summary of your California health records to share with your doctor.")
         
         report_data = f"""
@@ -151,7 +167,7 @@ try:
         
         Weekly Exercise Goal: {exercise_goal} minutes
         
-        Generated on: 2026-03-16
+        Generated on: 2026-04-07
         """
         
         st.text_area("Preview your report:", report_data, height=250)
