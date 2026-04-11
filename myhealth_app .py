@@ -1,183 +1,184 @@
 import streamlit as st
 import pandas as pd
 import json
+import numpy as np
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
 # 1. PAGE SETUP
-st.set_page_config(page_title="MyHealth Personal Dashboard", page_icon="👤", layout="wide")
+st.set_page_config(page_title="MyHealth AI: Early Risk Detection", page_icon="👤", layout="wide")
 
-# UI Styling
+# UI Styling (Purple/Blue professional theme)
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] { color: #007AFF !important; font-weight: 700; }
-    .stMetric { background-color: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 15px; border: 1px solid rgba(128, 128, 128, 0.2); }
+    [data-testid="stMetricValue"] { color: #8A2BE2 !important; font-weight: 700; }
+    .stMetric { background-color: rgba(138, 43, 226, 0.05); padding: 20px; border-radius: 15px; border: 1px solid rgba(138, 43, 226, 0.2); }
+    .stAlert { border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data
 def load_data():
-    # Note: Ensure these files exist in your local directory
+    """Loads the core datasets and calculates patient Age."""
     p = pd.read_csv('patients.csv')
     o = pd.read_csv('observations.csv')
     c = pd.read_csv('conditions.csv')
     e = pd.read_csv('encounters.csv')
+    
+    # Pre-calculate Age for ML features
+    p['BIRTHDATE'] = pd.to_datetime(p['BIRTHDATE'])
+    p['AGE'] = 2026 - p['BIRTHDATE'].dt.year
+    p['FULL_NAME'] = p['FIRST'] + " " + p['LAST']
     return p, o, c, e
 
+@st.cache_resource
+def train_chronic_models(df_p, df_o, df_c):
+    """
+    Trains XGBoost models for specific chronic diseases using 
+    Demographics (Age, Income, Gender) + Vitals (BP, Glucose, Creatinine, etc.)
+    """
+    # 1. Pivot Vitals to get the most recent data per patient
+    vitals_list = ['Hemoglobin', 'Creatinine', 'Blood Pressure Systolic', 'Body Mass Index', 'Glucose']
+    vitals = df_o[df_o['DESCRIPTION'].str.contains('|'.join(vitals_list), case=False, na=False)]
+    vitals_pivot = vitals.pivot_table(index='PATIENT', columns='DESCRIPTION', values='VALUE', aggfunc='last').reset_index()
+    
+    # 2. Merge with Patient Demographics (using your specific columns)
+    df_ml = pd.merge(vitals_pivot, df_p[['Id', 'AGE', 'GENDER', 'INCOME']], left_on='PATIENT', right_on='Id')
+    df_ml['GENDER'] = df_ml['GENDER'].map({'M': 1, 'F': 0})
+    
+    target_diseases = {
+        'Chronic Kidney Disease': 'Kidney',
+        'Heart Failure': 'Heart',
+        'Anemia': 'Anemia'
+    }
+    
+    trained_models = {}
+
+    for display_name, search_term in target_diseases.items():
+        # Labeling Target: 1 if patient has condition in conditions.csv
+        disease_ids = df_c[df_c['DESCRIPTION'].str.contains(search_term, case=False, na=False)]['PATIENT'].unique()
+        df_ml['target'] = df_ml['PATIENT'].apply(lambda x: 1 if x in disease_ids else 0)
+        
+        # Clean data for training
+        df_clean = df_ml.dropna().copy()
+        
+        if len(df_clean['target'].unique()) > 1:
+            X = df_clean.drop(['PATIENT', 'Id', 'target'], axis=1)
+            y = df_clean['target']
+            
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            
+            model = XGBClassifier(n_estimators=100, learning_rate=0.1, max_depth=5)
+            model.fit(X_train, y_train)
+            
+            acc = accuracy_score(y_test, model.predict(X_test))
+            trained_models[display_name] = {"model": model, "accuracy": acc, "features": X.columns.tolist()}
+            
+    return trained_models
+
+# --- MAIN EXECUTION ---
 try:
     df_p, df_o, df_c, df_e = load_data()
-
-    # --- THE HARD CHRONIC FILTER ---
-    CHRONIC_LIST = ['Diabetes', 'Hypertension', 'Heart Failure', 'COPD', 'Asthma', 'Kidney Disease', 'Hyperlipidemia', 'Alzheimer', 'Arthritis', 'Prediabetes']
-    has_chronic = df_c['DESCRIPTION'].str.contains('|'.join(CHRONIC_LIST), case=False, na=False)
-    chronic_patient_ids = df_c[has_chronic]['PATIENT'].unique()
-    df_p_chronic = df_p[df_p['Id'].isin(chronic_patient_ids)].copy()
-    df_p_chronic['FULL_NAME'] = df_p_chronic['FIRST'] + " " + df_p_chronic['LAST']
+    disease_models = train_chronic_models(df_p, df_o, df_c)
 
     # --- SIDEBAR ---
-    st.sidebar.title("👤 MyHealth Dashboard")
+    st.sidebar.title("👤 MyHealth AI")
     
-    with st.sidebar.expander("🔐 System Login (Demo Only)"):
-        patient_name = st.selectbox("Select Profile to Load", options=df_p_chronic['FULL_NAME'].sort_values())
+    # Select Patient
+    patient_name = st.sidebar.selectbox("Select Profile", options=df_p['FULL_NAME'].sort_values())
+    user_data = df_p[df_p['FULL_NAME'] == patient_name].iloc[0]
+    p_id = user_data['Id']
     
-    selected_row = df_p_chronic[df_p_chronic['FULL_NAME'] == patient_name].iloc[0]
-    p_id = selected_row['Id']
-    first_name = selected_row['FIRST']
-    
-    st.sidebar.markdown(f"**Logged in as:** {patient_name}")
+    st.sidebar.markdown(f"**Logged in:** {patient_name}")
     st.sidebar.divider()
 
-    st.sidebar.subheader("🏃 My Activity Goal")
-    exercise_goal = st.sidebar.slider("Weekly Exercise (Minutes)", 0, 300, 150)
-    potential_impact = exercise_goal / 30 
-    
-    # --- FILE UPLOAD SECTION WITH JSON SUPPORT ---
-    st.sidebar.subheader("📤 My Medical Records")
-    uploaded_file = st.sidebar.file_uploader("Add Hospital Visit Summary", type=['pdf', 'png', 'jpg', 'jpeg', 'json'])
-    
-    doc_risk_alert = False
+    # File Upload (Support for JSON)
+    st.sidebar.subheader("📤 Medical Records")
+    uploaded_file = st.sidebar.file_uploader("Upload Visit Summary", type=['pdf', 'json', 'png'])
     uploaded_json_data = None
+    if uploaded_file and uploaded_file.name.endswith('.json'):
+        uploaded_json_data = json.load(uploaded_file)
 
-    if uploaded_file is not None:
-        st.sidebar.success(f"File '{uploaded_file.name}' added!")
-        doc_risk_alert = True 
+    tab = st.sidebar.radio("Navigation", ["Home Dashboard", "AI Risk Analysis", "My Reports"])
 
-        # If the file is JSON, parse it immediately
-        if uploaded_file.name.endswith('.json'):
-            try:
-                uploaded_json_data = json.load(uploaded_file)
-            except Exception as json_err:
-                st.sidebar.error(f"Error parsing JSON: {json_err}")
-
-    # --- DATA FETCHING ---
-    user_o = df_o[df_o['PATIENT'] == p_id].sort_values('DATE')
-    user_e = df_e[df_e['PATIENT'] == p_id].sort_values('START')
-    user_c = df_c[df_c['PATIENT'] == p_id]
-    chronic_display = user_c[user_c['DESCRIPTION'].str.contains('|'.join(CHRONIC_LIST), case=False, na=False)]
-
-    def get_latest_vital(desc):
+    # --- DATA UTILS FOR SELECTED USER ---
+    user_o = df_o[df_o['PATIENT'] == p_id]
+    def get_latest_val(desc):
         res = user_o[user_o['DESCRIPTION'].str.contains(desc, case=False, na=False)]
-        return res.iloc[-1]['VALUE'] if not res.empty else "N/A"
-
-    current_bp = get_latest_vital("Systolic")
-    current_gl = get_latest_vital("Glucose")
-
-    tab = st.sidebar.radio("My Navigation", ["Home", "My History", "Health Check", "Doctor Prep", "My Reports"])
+        return res.iloc[-1]['VALUE'] if not res.empty else 0.0
 
     # ---------------------------------------------------------
-    # TAB 1: HOME
+    # TAB: HOME DASHBOARD
     # ---------------------------------------------------------
-    if tab == "Home":
-        st.title(f"👋 Hello, {first_name}!")
+    if tab == "Home Dashboard":
+        st.title(f"👋 Hello, {user_data['FIRST']}!")
         
-        if exercise_goal > 0:
-            st.info(f"✨ **Health Insight:** By aiming for {exercise_goal} minutes of activity, your individual Blood Pressure risk could drop by {potential_impact:.1f}%!")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Age", int(user_data['AGE']))
+        m2.metric("BMI", f"{get_latest_val('Body Mass Index'):.1f}")
+        m3.metric("Income Level", f"${user_data['INCOME']:,.0f}")
+        m4.metric("Creatinine", f"{get_latest_val('Creatinine')} mg/dL")
 
-        if doc_risk_alert:
-            st.warning(f"🔔 **Personal Update:** New data detected in: '{uploaded_file.name}'.")
+        st.subheader("📋 Current Diagnosed Conditions")
+        current_c = df_c[df_c['PATIENT'] == p_id]
+        if not current_c.empty:
+            for c in current_c['DESCRIPTION'].unique():
+                st.success(f"**{c}**")
+        else:
+            st.write("No chronic conditions on record.")
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Current Blood Pressure", f"{current_bp} mmHg")
-        m2.metric("Latest Glucose Level", f"{current_gl} mg/dL")
-        m3.metric("Conditions Tracked", len(chronic_display))
+    # ---------------------------------------------------------
+    # TAB: AI RISK ANALYSIS
+    # ---------------------------------------------------------
+    elif tab == "AI Risk Analysis":
+        st.title("🤖 AI Early Risk Detection")
+        st.write("Predictions based on your demographics and latest clinical observations.")
+
+        # Construct input features matching the model
+        current_vitals = {
+            'AGE': user_data['AGE'],
+            'GENDER': 1 if user_data['GENDER'] == 'M' else 0,
+            'INCOME': user_data['INCOME'],
+            'Blood Pressure Systolic': get_latest_val("Systolic"),
+            'Body Mass Index': get_latest_val("Body Mass Index"),
+            'Creatinine': get_latest_val("Creatinine"),
+            'Hemoglobin': get_latest_val("Hemoglobin"),
+            'Glucose': get_latest_val("Glucose")
+        }
+        
+        input_df = pd.DataFrame([current_vitals])
+
+        cols = st.columns(3)
+        for i, (name, m_info) in enumerate(disease_models.items()):
+            # Reorder columns to match the trained model's feature list
+            final_input = input_df[m_info['features']]
+            risk_prob = m_info['model'].predict_proba(final_input)[0][1]
+            
+            with cols[i]:
+                st.metric(name, f"{risk_prob*100:.1f}% Risk")
+                st.progress(risk_prob)
+                st.caption(f"Model Confidence: {m_info['accuracy']:.1%}")
 
         st.divider()
-        st.subheader("📋 My Tracked Conditions")
-        for _, row in chronic_display.iterrows():
-            st.success(f"**{row['DESCRIPTION']}**")
+        if any(m_info['model'].predict_proba(input_df[m_info['features']])[0][1] > 0.5 for m_info in disease_models.values()):
+            st.warning("⚠️ **Note:** Some risk scores are elevated. Consider reviewing these with a healthcare provider.")
 
     # ---------------------------------------------------------
-    # TAB 2: MY HISTORY
-    # ---------------------------------------------------------
-    elif tab == "My History":
-        st.title("🏥 My Medical Visits")
-        if not user_e.empty:
-            total_cost = user_e['TOTAL_CLAIM_COST'].sum()
-            st.metric("Total Healthcare Value", f"${total_cost:,.2f}")
-            st.table(user_e[['START', 'DESCRIPTION', 'TOTAL_CLAIM_COST']].tail(10))
-
-    # ---------------------------------------------------------
-    # TAB 3: HEALTH CHECK
-    # ---------------------------------------------------------
-    elif tab == "Health Check":
-        st.title("🧘 Daily Check-in")
-        q1 = st.checkbox("Any trouble breathing?")
-        q2 = st.checkbox("Increased thirst?")
-        if q1 or q2:
-            st.error("🚨 **Alert:** Please contact your care team immediately.")
-        else:
-            st.success("✅ Your current symptoms appear stable.")
-
-    # ---------------------------------------------------------
-    # TAB 4: DOCTOR PREP
-    # ---------------------------------------------------------
-    elif tab == "Doctor Prep":
-        st.title("🏥 My Visit Planner")
-        st.info(f"1. How does my BP of {current_bp} look for my profile?")
-        st.info(f"2. Does my activity goal of {exercise_goal} mins help my glucose trend?")
-        if doc_risk_alert:
-            st.info(f"3. Let's discuss the findings in my report: {uploaded_file.name}")
-
-    # ---------------------------------------------------------
-    # TAB 5: MY REPORTS
+    # TAB: MY REPORTS
     # ---------------------------------------------------------
     elif tab == "My Reports":
-        st.title("📄 Health Records & Summary")
+        st.title("📄 Digital Records & Summary")
         
-        # New Feature: Visualizing JSON Data
         if uploaded_json_data:
-            with st.expander("📂 View Uploaded Digital Record (JSON)", expanded=True):
-                st.write("Below is the structured data from your uploaded JSON file.")
+            with st.expander("📂 View Uploaded JSON Record", expanded=True):
                 st.json(uploaded_json_data)
         
         st.divider()
-        st.subheader("Export My Health Summary")
-        st.write("Download a summary of your California health records to share with your doctor.")
-        
-        report_data = f"""
-        MYHEALTH DASHBOARD REPORT
-        --------------------------
-        Patient: {patient_name}
-        Location: {selected_row['CITY']}, CA
-        
-        LATEST VITALS:
-        - Blood Pressure: {current_bp} mmHg
-        - Glucose: {current_gl} mg/dL
-        
-        ACTIVE CHRONIC CONDITIONS:
-        {', '.join(chronic_display['DESCRIPTION'].tolist()) if not chronic_display.empty else 'No active chronic conditions.'}
-        
-        Weekly Exercise Goal: {exercise_goal} minutes
-        
-        Generated on: 2026-04-07
-        """
-        
-        st.text_area("Preview your report:", report_data, height=250)
-        
-        st.download_button(
-            label="📥 Download as Text File",
-            data=report_data,
-            file_name=f"{first_name}_Health_Summary.txt",
-            mime="text/plain"
-        )
+        st.subheader("Generate Health Export")
+        summary_text = f"Patient: {user_data['FULL_NAME']}\nAge: {user_data['AGE']}\nRisk Status: Generated by MyHealth AI."
+        st.text_area("Preview:", summary_text)
+        st.download_button("📥 Download Report", summary_text, file_name="Health_Summary.txt")
 
 except Exception as e:
-    st.error(f"Dashboard Error: {e}")
+    st.error(f"System Error: {e}. Ensure all CSV files (patients, observations, conditions, encounters) are in the folder.")
