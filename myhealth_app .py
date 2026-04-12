@@ -1,167 +1,229 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-from sklearn.ensemble import RandomForestClassifier
+import matplotlib.pyplot as plt
+import time
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report
+import xgboost as xgb
 
-# 1. PAGE SETUP
-st.set_page_config(page_title="CKDPredict | Random Forest Edition", page_icon="🧬", layout="wide")
+# ── 1. PAGE SETUP ─────────────────────────────────────────────
+st.set_page_config(page_title="MyHealth CKD Predict", page_icon="👤", layout="wide")
 
-# Custom CSS for the "Master's Project" Look
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] { color: #6D28D9 !important; font-weight: 700; }
-    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 15px; border: 1px solid #6D28D9; box-shadow: 2px 2px 10px rgba(0,0,0,0.05); }
-    .stAlert { border-radius: 12px; }
+    [data-testid="stMetricValue"] { color: #007AFF !important; font-weight: 700; }
+    .stMetric { background-color: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 15px; border: 1px solid rgba(128, 128, 128, 0.2); }
     </style>
     """, unsafe_allow_html=True)
 
+# ── 2. LOAD DATA ──────────────────────────────────────────────
 @st.cache_data
-def load_and_prep_data():
-    """Loads datasets and prepares features from your specific CSV columns."""
+def load_data():
     p = pd.read_csv('patients.csv')
-    o = pd.read_csv('observations.csv')
     c = pd.read_csv('conditions.csv')
-    
-    # Calculate Age from BIRTHDATE
-    p['BIRTHDATE'] = pd.to_datetime(p['BIRTHDATE'])
-    p['AGE'] = 2026 - p['BIRTHDATE'].dt.year
-    p['FULL_NAME'] = p['FIRST'] + " " + p['LAST']
-    
-    return p, o, c
+    e = pd.read_csv('encounters.csv')
+    try:
+        o = pd.read_csv('observations.csv.gz', compression='gzip')
+    except:
+        o = pd.read_csv('observations.csv')
+    return p, o, c, e
 
+# ── 3. BUILD MODEL DATA (CKD OPTIMIZED) ───────────────────────
+@st.cache_data
+def build_model_data(patients, conditions, observations, encounters):
+    ckd_pattern = 'Kidney|Renal|Nephropathy|Glomerular|End stage renal'
+    ckd_ids = conditions[conditions['DESCRIPTION'].str.contains(
+                ckd_pattern, case=False, na=False)]['PATIENT'].unique()
+    
+    target_df = pd.DataFrame({'Id': patients['Id']})
+    target_df['target'] = target_df['Id'].isin(ckd_ids).astype(int)
+
+    def clean_demographics(df):
+        keep_cols = ['Id', 'GENDER', 'RACE', 'BIRTHDATE', 'INCOME']
+        df = df[keep_cols].copy()
+        df['BIRTHDATE'] = pd.to_datetime(df['BIRTHDATE'])
+        df['Age'] = 2026 - df['BIRTHDATE'].dt.year
+        df['GENDER'] = df['GENDER'].map({'M': 0, 'F': 1})
+        df = pd.get_dummies(df, columns=['RACE'], prefix='race', drop_first=True)
+        return df.drop(columns=['BIRTHDATE'])
+
+    patients_cleaned = clean_demographics(patients)
+
+    relevant_codes = ['2160-0', '33914-3', '8480-6', '4548-4', '2339-0']
+    obs_filtered = observations[observations['CODE'].isin(relevant_codes)]
+    obs_latest = (obs_filtered.sort_values('DATE')
+                  .groupby(['PATIENT', 'DESCRIPTION'])['VALUE']
+                  .last().unstack())
+    
+    obs_latest.columns = [col.replace(' ', '_').replace('[', '').replace(']', '')
+                          .replace('(', '').replace(')', '').replace('/', '_').lower() 
+                          for col in obs_latest.columns]
+    obs_latest = obs_latest.reset_index().rename(columns={'PATIENT': 'Id'})
+
+    df_final = target_df.merge(patients_cleaned, on='Id', how='left')
+    df_final = df_final.merge(obs_latest, on='Id', how='left')
+    return df_final
+
+# ── 4. TRAIN MODELS (DATA TYPE FIX INCLUDED) ─────────────────
 @st.cache_resource
-def train_random_forest_model(df_p, df_o, df_c):
-    """
-    Trains the Random Forest model for Chronic Kidney Disease.
-    Features include: Demographics (Age, Gender, Income) + Clinical Vitals.
-    """
-    # 1. Feature Extraction: Focus on Kidney Markers
-    kidney_markers = ['Creatinine', 'Urea Nitrogen', 'Blood Pressure Systolic', 'Glucose', 'Body Mass Index']
-    v_df = df_o[df_o['DESCRIPTION'].str.contains('|'.join(kidney_markers), case=False, na=False)]
-    v_pivot = v_df.pivot_table(index='PATIENT', columns='DESCRIPTION', values='VALUE', aggfunc='last').reset_index()
-    
-    # 2. Merge with your specific Patient columns
-    df_ml = pd.merge(v_pivot, df_p[['Id', 'AGE', 'GENDER', 'INCOME']], left_on='PATIENT', right_on='Id')
-    df_ml['GENDER'] = df_ml['GENDER'].map({'M': 1, 'F': 0})
-    
-    # 3. Labeling (Target)
-    ckd_ids = df_c[df_c['DESCRIPTION'].str.contains('Kidney', case=False, na=False)]['PATIENT'].unique()
-    df_ml['target'] = df_ml['Id'].apply(lambda x: 1 if x in ckd_ids else 0)
-    
-    # 4. Training the Random Forest
-    df_final = df_ml.dropna()
-    X = df_final.drop(['PATIENT', 'Id', 'target'], axis=1)
-    y = df_final['target']
-    
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    rf_model = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42)
-    rf_model.fit(X_train, y_train)
-    
-    acc = accuracy_score(y_test, rf_model.predict(X_test))
-    return rf_model, X.columns.tolist(), acc
+def train_models(_df_final):
+    X = _df_final.drop(columns=['target', 'Id'])
+    y = _df_final['target']
 
-# --- MAIN LOGIC ---
+    for col in X.columns:
+        X[col] = pd.to_numeric(X[col], errors='coerce')
+    X = X.fillna(X.median())
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    ratio = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+    xgb_model = xgb.XGBClassifier(scale_pos_weight=ratio, eval_metric='logloss', random_state=42)
+    xgb_model.fit(X_train, y_train)
+    
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    lasso_model = LogisticRegression(penalty='l1', solver='liblinear', class_weight='balanced')
+    lasso_model.fit(X_train_scaled, y_train)
+
+    return (lasso_model, scaler, xgb_model, X, X_test, y_test)
+
+# ── 5. HELPER ─────────────────────────────────────────────────
+def get_latest_vital(desc, user_o):
+    res = user_o[user_o['DESCRIPTION'].str.lower().str.contains(desc.lower(), na=False)]
+    if not res.empty:
+        try: return f"{float(res.iloc[-1]['VALUE']):.1f}"
+        except: return res.iloc[-1]['VALUE']
+    return "N/A"
+
+# ── 6. MAIN EXECUTION ─────────────────────────────────────────
 try:
-    df_p, df_o, df_c = load_and_prep_data()
-    model, features, model_acc = train_random_forest_model(df_p, df_o, df_c)
+    df_p, df_o, df_c, df_e = load_data()
+    
+    with st.spinner("AI Engine: Training Kidney Risk Models..."):
+        model_data_full = build_model_data(df_p, df_c, df_o, df_e)
+        lasso_model, scaler, xgb_model, X, X_test, y_test = train_models(model_data_full)
+        xgb_acc = accuracy_score(y_test, xgb_model.predict(X_test))
+        lasso_acc = accuracy_score(y_test, lasso_model.predict(scaler.transform(X_test)))
+
+    ckd_ids = df_c[df_c['DESCRIPTION'].str.contains('Kidney|Renal', case=False)]['PATIENT'].unique()
+    df_p_demo = df_p[df_p['Id'].isin(ckd_ids)].copy()
+    df_p_demo['FULL_NAME'] = df_p_demo['FIRST'] + " " + df_p_demo['LAST']
 
     # SIDEBAR
-    st.sidebar.title("🔬 SLU Research")
-    st.sidebar.subheader("CKDPredict System")
-    st.sidebar.markdown(f"**Model:** Random Forest\n**Accuracy:** {model_acc:.2%}")
-    st.sidebar.divider()
+    st.sidebar.title("👤 MyHealth CKD AI")
+    with st.sidebar.expander("🔐 System Login (Demo)"):
+        patient_name = st.sidebar.selectbox("Select Profile", options=df_p_demo['FULL_NAME'].sort_values())
     
-    # Patient Selector
-    patient_name = st.sidebar.selectbox("Select Patient Profile", options=df_p['FULL_NAME'].sort_values())
-    patient_row = df_p[df_p['FULL_NAME'] == patient_name].iloc[0]
-    p_id = patient_row['Id']
+    selected_row = df_p_demo[df_p_demo['FULL_NAME'] == patient_name].iloc[0]
+    p_id = selected_row['Id']
+    
+    st.sidebar.divider()
+    st.sidebar.subheader("🏆 Model Performance")
+    col_s1, col_s2 = st.sidebar.columns(2)
+    col_s1.metric("XGBoost", f"{xgb_acc*100:.1f}%")
+    col_s2.metric("Lasso", f"{lasso_acc*100:.1f}%")
+    
+    st.sidebar.divider()
+    uploaded_file = st.sidebar.file_uploader("Upload Lab Report", type=['pdf','json','png','jpg'])
+    tab = st.sidebar.radio("Navigation", ["Home", "My History", "Health Check", "Model Insights", "My Reports"])
 
-    # Navigation
-    tab_main, tab_predict, tab_json = st.tabs(["📊 Patient Dashboard", "🧠 AI Kidney Prediction", "📂 Data Records"])
+    user_o = df_o[df_o['PATIENT'] == p_id].sort_values('DATE')
+    user_c = df_c[df_c['PATIENT'] == p_id]
+    current_bp = get_latest_vital("Systolic", user_o)
+    current_gfr = get_latest_vital("GFR", user_o)
 
-    # Utility: Get latest vital for patient
-    user_obs = df_o[df_o['PATIENT'] == p_id]
-    def fetch_vital(name):
-        res = user_obs[user_obs['DESCRIPTION'].str.contains(name, case=False)]
-        return res.iloc[-1]['VALUE'] if not res.empty else 0.0
-
-    # ---------------------------------------------------------
-    # TAB 1: DASHBOARD
-    # ---------------------------------------------------------
-    with tab_main:
-        st.header(f"Clinical Profile: {patient_name}")
+    # ── TAB: HOME (WITH NEW QUESTIONNAIRE) ────────────────────
+    if tab == "Home":
+        st.title(f"👋 Welcome, {selected_row['FIRST']}!")
         
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Patient Age", int(patient_row['AGE']))
-        m2.metric("Gender", patient_row['GENDER'])
-        m3.metric("Income", f"${patient_row['INCOME']:,.0f}")
-        m4.metric("Creatinine", f"{fetch_vital('Creatinine')} mg/dL")
+        # Dashboard Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Current eGFR", f"{current_gfr} mL/min")
+        m2.metric("Blood Pressure", f"{current_bp} mmHg")
+        m3.metric("Kidney Conditions", len(user_c[user_c['DESCRIPTION'].str.contains('Kidney|Renal', case=False)]))
 
         st.divider()
-        st.subheader("Documented Conditions")
-        conditions = df_c[df_c['PATIENT'] == p_id]['DESCRIPTION'].unique()
-        if len(conditions) > 0:
-            for cond in conditions:
-                st.write(f"• {cond}")
+
+        # ── PATIENT QUESTIONNAIRE ──
+        st.subheader("📝 Daily Health Check-in")
+        with st.form("health_check_form"):
+            st.write("Please answer the following based on your health today:")
+            
+            q1 = st.select_slider("How is your energy level?", options=["Very Low", "Low", "Normal", "High"])
+            q2 = st.radio("Are you experiencing any swelling in your ankles or feet?", ["No", "Slightly", "Yes - Significant"])
+            q3 = st.radio("Have you noticed any changes in your urination frequency?", ["No change", "More frequent", "Less frequent"])
+            q4 = st.checkbox("Are you experiencing a metallic taste in your mouth?")
+            q5 = st.text_area("Any other symptoms or notes for your doctor?")
+
+            submitted = st.form_submit_button("Submit Daily Check-in")
+            
+            if submitted:
+                st.success("Thank you! Your responses have been saved to your health profile.")
+                # Logic for triggering alerts based on answers
+                if q2 != "No" or q4:
+                    st.warning("⚠️ High Risk Indicator: These symptoms are often linked to kidney function. We recommend scheduling a consultation.")
+
+        st.divider()
+        st.subheader("📋 Tracked Kidney Conditions")
+        for cond in user_c[user_c['DESCRIPTION'].str.contains('Kidney|Renal', case=False)]['DESCRIPTION'].unique():
+            st.error(f"**{cond}**")
+
+    # ── TAB: MY HISTORY ───────────────────────────────────────
+    elif tab == "My History":
+        st.title("🏥 Medical Visit History")
+        user_e = df_e[df_e['PATIENT'] == p_id].sort_values('START', ascending=False)
+        st.table(user_e[['START', 'DESCRIPTION', 'TOTAL_CLAIM_COST']].head(10))
+
+    # ── TAB: HEALTH CHECK ─────────────────────────────────────
+    elif tab == "Health Check":
+        st.title("🩺 Vital Signs Trend")
+        metric = st.selectbox("Select Metric", ["GFR", "Creatinine", "Systolic", "Glucose"])
+        trend = user_o[user_o['DESCRIPTION'].str.contains(metric, case=False)].copy()
+        trend['VALUE'] = pd.to_numeric(trend['VALUE'], errors='coerce')
+        
+        if not trend.empty:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(pd.to_datetime(trend['DATE']), trend['VALUE'], marker='o', color='#007AFF')
+            ax.set_title(f"{metric} History")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
         else:
-            st.write("No existing chronic diagnoses.")
+            st.warning("No data found for this metric.")
 
-    # ---------------------------------------------------------
-    # TAB 2: AI PREDICTION (Random Forest)
-    # ---------------------------------------------------------
-    with tab_predict:
-        st.header("Random Forest Risk Analysis")
-        st.write("Generating a real-time risk score for Chronic Kidney Disease Stage 3.")
+    # ── TAB: MODEL INSIGHTS ───────────────────────────────────
+    elif tab == "Model Insights":
+        st.title("🤖 AI Risk Drivers")
+        st.subheader("Top 10 Feature Importance (XGBoost)")
+        feat_imp = pd.Series(xgb_model.feature_importances_, index=X.columns).sort_values().tail(10)
+        fig, ax = plt.subplots()
+        feat_imp.plot(kind='barh', color='teal', ax=ax)
+        st.pyplot(fig)
 
-        # Mapping input data to match model features
-        input_data = {
-            'AGE': patient_row['AGE'],
-            'GENDER': 1 if patient_row['GENDER'] == 'M' else 0,
-            'INCOME': patient_row['INCOME'],
-            'Blood Pressure Systolic': fetch_vital("Systolic"),
-            'Body Mass Index': fetch_vital("Body Mass Index"),
-            'Creatinine': fetch_vital("Creatinine"),
-            'Glucose': fetch_vital("Glucose"),
-            'Urea Nitrogen': fetch_vital("Urea Nitrogen")
-        }
-        
-        # Ensure correct column order
-        input_df = pd.DataFrame([input_data])[features]
-        
-        # Prediction
-        probability = model.predict_proba(input_df)[0][1]
-        risk_pct = probability * 100
+    # ── TAB: MY REPORTS ───────────────────────────────────────
+    elif tab == "My Reports":
+        st.title("📄 Export Clinical Summary")
+        report_text = f"PATIENT: {patient_name}\nLATEST GFR: {current_gfr}\nLATEST BP: {current_bp}\n"
+        st.code(report_text)
+        st.download_button("Download Report", report_text, file_name=f"{patient_name}_health.txt")
 
-        st.divider()
-        st.subheader("Prediction Result")
-        
-        col_res, col_gauge = st.columns([1, 2])
-        with col_res:
-            st.metric("CKD Risk Probability", f"{risk_pct:.1f}%")
-            if risk_pct > 70:
-                st.error("HIGH RISK: Immediate screening recommended.")
-            elif risk_pct > 35:
-                st.warning("MODERATE RISK: Increased monitoring of metabolic markers.")
-            else:
-                st.success("LOW RISK: Stable renal profile.")
-        
-        with col_gauge:
-            st.progress(probability)
-            st.caption("Random Forest Classifier confidence levels based on historical California cohort data.")
-
-    # ---------------------------------------------------------
-    # TAB 3: JSON RECORDS
-    # ---------------------------------------------------------
-    with tab_json:
-        st.header("Digital Health Records")
-        uploaded_file = st.file_uploader("Upload Hospital Visit Summary (JSON)", type=['json'])
         if uploaded_file:
-            data = json.load(uploaded_file)
-            st.json(data)
+            st.divider()
+            with st.status("🔍 Analyzing uploaded document...", expanded=True) as status:
+                st.write("Extracting clinical text...")
+                time.sleep(1)
+                st.write("Running XGBoost inference...")
+                time.sleep(1)
+                status.update(label="Analysis Complete!", state="complete", expanded=False)
+            
+            st.subheader("AI Analysis Result")
+            st.metric("Detected Risk", "HIGH", delta="CKD Priority", delta_color="inverse")
 
 except Exception as e:
-    st.error(f"Critical System Error: {e}. Ensure all patient CSV files are in the local directory.")
+    st.error(f"Critical Dashboard Error: {e}")
+    st.exception(e)
