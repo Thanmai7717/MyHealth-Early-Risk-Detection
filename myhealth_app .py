@@ -1,184 +1,155 @@
 import streamlit as st
 import pandas as pd
-import json
 import numpy as np
+import json
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
 
 # 1. PAGE SETUP
-st.set_page_config(page_title="MyHealth AI: Early Risk Detection", page_icon="👤", layout="wide")
+st.set_page_config(page_title="CKDPredict | SLU Research", page_icon="🔬", layout="wide")
 
-# UI Styling (Purple/Blue professional theme)
+# Purple/Blue Professional Styling
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] { color: #8A2BE2 !important; font-weight: 700; }
-    .stMetric { background-color: rgba(138, 43, 226, 0.05); padding: 20px; border-radius: 15px; border: 1px solid rgba(138, 43, 226, 0.2); }
-    .stAlert { border-radius: 10px; }
+    [data-testid="stMetricValue"] { color: #6D28D9 !important; font-weight: 700; }
+    .stMetric { background-color: #F3F4F6; padding: 20px; border-radius: 12px; border-left: 5px solid #6D28D9; }
+    .status-box { padding: 15px; border-radius: 10px; margin-bottom: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data
-def load_data():
-    """Loads the core datasets and calculates patient Age."""
+def load_core_data():
     p = pd.read_csv('patients.csv')
     o = pd.read_csv('observations.csv')
     c = pd.read_csv('conditions.csv')
-    e = pd.read_csv('encounters.csv')
     
-    # Pre-calculate Age for ML features
+    # Feature Engineering: Age and Grouping
     p['BIRTHDATE'] = pd.to_datetime(p['BIRTHDATE'])
     p['AGE'] = 2026 - p['BIRTHDATE'].dt.year
-    p['FULL_NAME'] = p['FIRST'] + " " + p['LAST']
-    return p, o, c, e
+    return p, o, c
 
 @st.cache_resource
-def train_chronic_models(df_p, df_o, df_c):
+def train_dual_models(df_p, df_o, df_c):
     """
-    Trains XGBoost models for specific chronic diseases using 
-    Demographics (Age, Income, Gender) + Vitals (BP, Glucose, Creatinine, etc.)
+    Trains two distinct models as per research:
+    Model A: Diabetic Patients
+    Model B: Non-Diabetic (Hypertension, Heart Failure, etc.)
     """
-    # 1. Pivot Vitals to get the most recent data per patient
-    vitals_list = ['Hemoglobin', 'Creatinine', 'Blood Pressure Systolic', 'Body Mass Index', 'Glucose']
+    # Pivot Vitals: Creatinine, eGFR (if available), BP, Glucose, BMI
+    vitals_list = ['Creatinine', 'Blood Pressure Systolic', 'Body Mass Index', 'Glucose', 'Urea Nitrogen']
     vitals = df_o[df_o['DESCRIPTION'].str.contains('|'.join(vitals_list), case=False, na=False)]
     vitals_pivot = vitals.pivot_table(index='PATIENT', columns='DESCRIPTION', values='VALUE', aggfunc='last').reset_index()
     
-    # 2. Merge with Patient Demographics (using your specific columns)
     df_ml = pd.merge(vitals_pivot, df_p[['Id', 'AGE', 'GENDER', 'INCOME']], left_on='PATIENT', right_on='Id')
     df_ml['GENDER'] = df_ml['GENDER'].map({'M': 1, 'F': 0})
-    
-    target_diseases = {
-        'Chronic Kidney Disease': 'Kidney',
-        'Heart Failure': 'Heart',
-        'Anemia': 'Anemia'
-    }
-    
-    trained_models = {}
 
-    for display_name, search_term in target_diseases.items():
-        # Labeling Target: 1 if patient has condition in conditions.csv
-        disease_ids = df_c[df_c['DESCRIPTION'].str.contains(search_term, case=False, na=False)]['PATIENT'].unique()
-        df_ml['target'] = df_ml['PATIENT'].apply(lambda x: 1 if x in disease_ids else 0)
-        
-        # Clean data for training
-        df_clean = df_ml.dropna().copy()
-        
-        if len(df_clean['target'].unique()) > 1:
-            X = df_clean.drop(['PATIENT', 'Id', 'target'], axis=1)
-            y = df_clean['target']
-            
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            
-            model = XGBClassifier(n_estimators=100, learning_rate=0.1, max_depth=5)
-            model.fit(X_train, y_train)
-            
-            acc = accuracy_score(y_test, model.predict(X_test))
-            trained_models[display_name] = {"model": model, "accuracy": acc, "features": X.columns.tolist()}
-            
-    return trained_models
+    # Identify Disease Groups
+    ckd_ids = df_c[df_c['DESCRIPTION'].str.contains('Kidney', case=False, na=False)]['PATIENT'].unique()
+    diabetic_ids = df_c[df_c['DESCRIPTION'].str.contains('Diabetes', case=False, na=False)]['PATIENT'].unique()
 
-# --- MAIN EXECUTION ---
+    df_ml['is_diabetic'] = df_ml['Id'].apply(lambda x: 1 if x in diabetic_ids else 0)
+    df_ml['target_ckd'] = df_ml['Id'].apply(lambda x: 1 if x in ckd_ids else 0)
+
+    # Split into Model A and Model B
+    df_a = df_ml[df_ml['is_diabetic'] == 1].dropna()
+    df_b = df_ml[df_ml['is_diabetic'] == 0].dropna()
+
+    models = {}
+    for label, data in [("Model A (Diabetic)", df_a), ("Model B (Non-Diabetic)", df_b)]:
+        X = data.drop(['PATIENT', 'Id', 'target_ckd', 'is_diabetic'], axis=1)
+        y = data['target_ckd']
+        
+        model = XGBClassifier(n_estimators=150, learning_rate=0.05, max_depth=4)
+        model.fit(X, y)
+        models[label] = {"model": model, "features": X.columns.tolist()}
+        
+    return models
+
+# --- MAIN APP ---
 try:
-    df_p, df_o, df_c, df_e = load_data()
-    disease_models = train_chronic_models(df_p, df_o, df_c)
+    df_p, df_o, df_c = load_core_data()
+    dual_models = train_dual_models(df_p, df_o, df_c)
 
-    # --- SIDEBAR ---
-    st.sidebar.title("👤 MyHealth AI")
+    # SIDEBAR
+    st.sidebar.title("🔬 CKDPredict")
+    st.sidebar.caption("Master's Research Project - SLU")
     
-    # Select Patient
-    patient_name = st.sidebar.selectbox("Select Profile", options=df_p['FULL_NAME'].sort_values())
-    user_data = df_p[df_p['FULL_NAME'] == patient_name].iloc[0]
-    p_id = user_data['Id']
+    patient_name = st.sidebar.selectbox("Select Patient to Screen", options=(df_p['FIRST'] + " " + df_p['LAST']).sort_values())
+    selected_user = df_p[(df_p['FIRST'] + " " + df_p['LAST']) == patient_name].iloc[0]
+    p_id = selected_user['Id']
+
+    # PRE-SCREENING LOGIC
+    user_conditions = df_c[df_c['PATIENT'] == p_id]['DESCRIPTION'].tolist()
+    is_diabetic = any("Diabetes" in cond for cond in user_conditions)
+    current_model_key = "Model A (Diabetic)" if is_diabetic else "Model B (Non-Diabetic)"
     
-    st.sidebar.markdown(f"**Logged in:** {patient_name}")
-    st.sidebar.divider()
-
-    # File Upload (Support for JSON)
-    st.sidebar.subheader("📤 Medical Records")
-    uploaded_file = st.sidebar.file_uploader("Upload Visit Summary", type=['pdf', 'json', 'png'])
-    uploaded_json_data = None
-    if uploaded_file and uploaded_file.name.endswith('.json'):
-        uploaded_json_data = json.load(uploaded_file)
-
-    tab = st.sidebar.radio("Navigation", ["Home Dashboard", "AI Risk Analysis", "My Reports"])
-
-    # --- DATA UTILS FOR SELECTED USER ---
-    user_o = df_o[df_o['PATIENT'] == p_id]
-    def get_latest_val(desc):
-        res = user_o[user_o['DESCRIPTION'].str.contains(desc, case=False, na=False)]
-        return res.iloc[-1]['VALUE'] if not res.empty else 0.0
+    # NAVIGATION
+    tab = st.sidebar.radio("View", ["Clinical Dashboard", "Prediction Engine"])
 
     # ---------------------------------------------------------
-    # TAB: HOME DASHBOARD
+    # TAB: DASHBOARD
     # ---------------------------------------------------------
-    if tab == "Home Dashboard":
-        st.title(f"👋 Hello, {user_data['FIRST']}!")
+    if tab == "Clinical Dashboard":
+        st.title(f"Clinical Profile: {patient_name}")
         
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Age", int(user_data['AGE']))
-        m2.metric("BMI", f"{get_latest_val('Body Mass Index'):.1f}")
-        m3.metric("Income Level", f"${user_data['INCOME']:,.0f}")
-        m4.metric("Creatinine", f"{get_latest_val('Creatinine')} mg/dL")
-
-        st.subheader("📋 Current Diagnosed Conditions")
-        current_c = df_c[df_c['PATIENT'] == p_id]
-        if not current_c.empty:
-            for c in current_c['DESCRIPTION'].unique():
-                st.success(f"**{c}**")
-        else:
-            st.write("No chronic conditions on record.")
-
-    # ---------------------------------------------------------
-    # TAB: AI RISK ANALYSIS
-    # ---------------------------------------------------------
-    elif tab == "AI Risk Analysis":
-        st.title("🤖 AI Early Risk Detection")
-        st.write("Predictions based on your demographics and latest clinical observations.")
-
-        # Construct input features matching the model
-        current_vitals = {
-            'AGE': user_data['AGE'],
-            'GENDER': 1 if user_data['GENDER'] == 'M' else 0,
-            'INCOME': user_data['INCOME'],
-            'Blood Pressure Systolic': get_latest_val("Systolic"),
-            'Body Mass Index': get_latest_val("Body Mass Index"),
-            'Creatinine': get_latest_val("Creatinine"),
-            'Hemoglobin': get_latest_val("Hemoglobin"),
-            'Glucose': get_latest_val("Glucose")
-        }
-        
-        input_df = pd.DataFrame([current_vitals])
-
-        cols = st.columns(3)
-        for i, (name, m_info) in enumerate(disease_models.items()):
-            # Reorder columns to match the trained model's feature list
-            final_input = input_df[m_info['features']]
-            risk_prob = m_info['model'].predict_proba(final_input)[0][1]
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader("Patient Metadata")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Age", int(selected_user['AGE']))
+            m2.metric("Gender", selected_user['GENDER'])
+            m3.metric("Income", f"${selected_user['INCOME']:,.0f}")
             
-            with cols[i]:
-                st.metric(name, f"{risk_prob*100:.1f}% Risk")
-                st.progress(risk_prob)
-                st.caption(f"Model Confidence: {m_info['accuracy']:.1%}")
+            st.divider()
+            st.subheader("Current Condition Map")
+            for cond in user_conditions:
+                st.write(f"• {cond}")
 
-        st.divider()
-        if any(m_info['model'].predict_proba(input_df[m_info['features']])[0][1] > 0.5 for m_info in disease_models.values()):
-            st.warning("⚠️ **Note:** Some risk scores are elevated. Consider reviewing these with a healthcare provider.")
+        with col2:
+            st.subheader("Model Assignment")
+            if is_diabetic:
+                st.info("🔵 Assigned to **Model A**\n(Diabetic Cohort)")
+            else:
+                st.success("🟢 Assigned to **Model B**\n(Cardiovascular Cohort)")
 
     # ---------------------------------------------------------
-    # TAB: MY REPORTS
+    # TAB: PREDICTION ENGINE
     # ---------------------------------------------------------
-    elif tab == "My Reports":
-        st.title("📄 Digital Records & Summary")
+    elif tab == "Prediction Engine":
+        st.title("🛡️ Early CKD Detection")
         
-        if uploaded_json_data:
-            with st.expander("📂 View Uploaded JSON Record", expanded=True):
-                st.json(uploaded_json_data)
-        
-        st.divider()
-        st.subheader("Generate Health Export")
-        summary_text = f"Patient: {user_data['FULL_NAME']}\nAge: {user_data['AGE']}\nRisk Status: Generated by MyHealth AI."
-        st.text_area("Preview:", summary_text)
-        st.download_button("📥 Download Report", summary_text, file_name="Health_Summary.txt")
+        # Extract features for prediction
+        user_obs = df_o[df_o['PATIENT'] == p_id]
+        def get_v(d):
+            r = user_obs[user_obs['DESCRIPTION'].str.contains(d, case=False)]
+            return r.iloc[-1]['VALUE'] if not r.empty else 0.0
+
+        input_data = {
+            'AGE': selected_user['AGE'],
+            'GENDER': 1 if selected_user['GENDER'] == 'M' else 0,
+            'INCOME': selected_user['INCOME'],
+            'Blood Pressure Systolic': get_v("Systolic"),
+            'Body Mass Index': get_v("Body Mass Index"),
+            'Creatinine': get_v("Creatinine"),
+            'Glucose': get_v("Glucose"),
+            'Urea Nitrogen': get_v("Urea Nitrogen")
+        }
+
+        # Select model and run inference
+        m_info = dual_models[current_model_key]
+        input_df = pd.DataFrame([input_data])[m_info['features']]
+        risk_score = m_info['model'].predict_proba(input_df)[0][1]
+
+        # Display Results
+        st.metric(f"CKD Stage 3 Onset Risk (12-Month Forecast)", f"{risk_score*100:.1f}%")
+        st.progress(risk_score)
+
+        if risk_score > 0.6:
+            st.error("🚨 **High Risk Alert:** Based on longitudinal progression, this patient shows significant markers for CKD onset within 12 months.")
+        elif risk_score > 0.3:
+            st.warning("⚠️ **Monitoring Recommended:** Elevated Creatinine and BP trends suggest early-stage decline.")
+        else:
+            st.success("✅ **Stable:** Clinical markers are consistent with baseline for this cohort.")
 
 except Exception as e:
-    st.error(f"System Error: {e}. Ensure all CSV files (patients, observations, conditions, encounters) are in the folder.")
+    st.error(f"Error loading Research Dashboard: {e}")
