@@ -2,6 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime  # <--- Make sure this is here!
 import matplotlib.pyplot as plt
 import time
 from sklearn.model_selection import train_test_split
