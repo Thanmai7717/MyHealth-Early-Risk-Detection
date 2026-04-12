@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
 # 1. PAGE SETUP
-st.set_page_config(page_title="CKDPredict | SLU Research", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="MyHealth AI | Research Dashboard", page_icon="🧬", layout="wide")
 
 # Purple/Professional Research Styling
 st.markdown("""
@@ -19,37 +19,40 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-def find_file(filename):
-    """Utility to find files even if they are in a subfolder."""
-    for root, dirs, files in os.walk("."):
-        for name in files:
-            if name.lower() == filename.lower():
-                return os.path.join(root, name)
-    return None
-
 @st.cache_data
 def load_research_data():
-    """Loads datasets and prepares features from your specific CSV columns."""
-    paths = {
-        'p': find_file('patients.csv'),
-        'o': find_file('observations.csv'),
-        'c': find_file('conditions.csv')
+    """Loads datasets from the local directory with strict error handling."""
+    # Define exact expected filenames
+    file_map = {
+        'patients': 'patients.csv',
+        'observations': 'observations.csv',
+        'conditions': 'conditions.csv'
     }
     
-    # Check if files exist
-    for key, path in paths.items():
-        if path is None:
-            st.error(f"❌ Missing file: {key.upper()}. Please ensure it is in the project folder.")
-            st.stop()
+    loaded_data = {}
+    
+    for key, filename in file_map.items():
+        if os.path.exists(filename):
+            loaded_data[key] = pd.read_csv(filename)
+        else:
+            # Try case-insensitive check if direct match fails
+            files_in_dir = os.listdir('.')
+            match = next((f for f in files_in_dir if f.lower() == filename.lower()), None)
+            if match:
+                loaded_data[key] = pd.read_csv(match)
+            else:
+                st.error(f"❌ File Not Found: {filename}")
+                st.info(f"Please ensure {filename} is in the same folder as this script.")
+                st.stop()
 
-    p = pd.read_csv(paths['p'])
-    o = pd.read_csv(paths['o'])
-    c = pd.read_csv(paths['c'])
+    p = loaded_data['patients']
+    o = loaded_data['observations']
+    c = loaded_data['conditions']
     
     # Process Demographics
     p['BIRTHDATE'] = pd.to_datetime(p['BIRTHDATE'])
     p['AGE'] = 2026 - p['BIRTHDATE'].dt.year
-    p['FULL_NAME'] = p['FIRST'] + " " + p['LAST']
+    p['FULL_NAME'] = p['FIRST'].fillna('') + " " + p['LAST'].fillna('')
     p['GENDER_NUM'] = p['GENDER'].map({'M': 0, 'F': 1})
     
     return p, o, c
@@ -57,17 +60,18 @@ def load_research_data():
 @st.cache_resource
 def train_final_rf_model(df_p, df_o, df_c):
     """
-    Random Forest Implementation (Balanced weights per model.ipynb)
+    Trains the Random Forest model using the 79% accuracy 
+    parameters identified in model.ipynb.
     """
     # 1. Pivot clinical markers
     kidney_markers = ['Creatinine', 'Urea Nitrogen', 'Blood Pressure Systolic', 'Body Mass Index', 'Glucose']
     v_df = df_o[df_o['DESCRIPTION'].str.contains('|'.join(kidney_markers), case=False, na=False)]
     v_pivot = v_df.pivot_table(index='PATIENT', columns='DESCRIPTION', values='VALUE', aggfunc='last').reset_index()
     
-    # 2. Merge with Patient Data
+    # 2. Merge with Demographic columns
     df_ml = pd.merge(v_pivot, df_p[['Id', 'AGE', 'GENDER_NUM', 'INCOME']], left_on='PATIENT', right_on='Id')
     
-    # 3. Labeling Target
+    # 3. Target: Identify patients with kidney-related conditions
     ckd_ids = df_c[df_c['DESCRIPTION'].str.contains('Kidney', case=False, na=False)]['PATIENT'].unique()
     df_ml['target'] = df_ml['Id'].apply(lambda x: 1 if x in ckd_ids else 0)
     
@@ -78,6 +82,7 @@ def train_final_rf_model(df_p, df_o, df_c):
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
+    # Match research notebook: n_estimators=100, balanced weights
     rf = RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=42)
     rf.fit(X_train, y_train)
     
@@ -90,15 +95,15 @@ try:
     model, features, accuracy = train_final_rf_model(df_p, df_o, df_c)
 
     # SIDEBAR
-    st.sidebar.markdown("<h2 style='color: #6D28D9;'>🔬 CKDPredict</h2>", unsafe_allow_html=True)
-    st.sidebar.info(f"Random Forest Accuracy: {accuracy:.1%}")
+    st.sidebar.markdown("<h2 style='color: #6D28D9;'>🔬 Project MyHealth</h2>", unsafe_allow_html=True)
+    st.sidebar.info(f"Model: Random Forest\nAccuracy: {accuracy:.1%}")
     st.sidebar.divider()
     
-    selected_name = st.sidebar.selectbox("Patient Profile", options=df_p['FULL_NAME'].sort_values())
+    selected_name = st.sidebar.selectbox("Select Patient Profile", options=df_p['FULL_NAME'].sort_values())
     patient = df_p[df_p['FULL_NAME'] == selected_name].iloc[0]
     p_id = patient['Id']
 
-    tab1, tab2, tab3 = st.tabs(["📊 Patient Dashboard", "🧠 AI Kidney Prediction", "📂 Data Records"])
+    tab1, tab2, tab3 = st.tabs(["📊 Patient Dashboard", "🧠 AI Prediction Engine", "📂 Data Records"])
 
     # Utility: Get latest vital
     user_obs = df_o[df_o['PATIENT'] == p_id]
@@ -116,13 +121,13 @@ try:
         c4.metric("Creatinine", f"{get_latest('Creatinine')} mg/dL")
 
         st.divider()
-        st.subheader("Documented Conditions")
+        st.subheader("Existing Diagnoses")
         history = df_c[df_c['PATIENT'] == p_id]['DESCRIPTION'].unique()
         if len(history) > 0:
             for item in history:
                 st.write(f"🚩 {item}")
         else:
-            st.write("No chronic conditions documented.")
+            st.write("No chronic conditions currently documented.")
 
     # TAB 2: PREDICTION ENGINE
     with tab2:
@@ -146,20 +151,20 @@ try:
         st.divider()
         res_col, bar_col = st.columns([1, 2])
         with res_col:
-            st.metric("Kidney Risk Probability", f"{risk_pct:.1f}%")
+            st.metric("Risk Probability", f"{risk_pct:.1f}%")
             if risk_pct > 70:
-                st.error("HIGH RISK")
+                st.error("HIGH RISK: Early detection marker detected.")
             elif risk_pct > 30:
-                st.warning("ELEVATED")
+                st.warning("ELEVATED: Continued monitoring advised.")
             else:
-                st.success("STABLE")
+                st.success("STABLE: Risk levels within normal variance.")
         with bar_col:
             st.progress(risk_score)
-            st.caption("Probability analysis based on longitudinal patient vitals.")
+            st.caption("Probability analysis based on longitudinal clinical data.")
 
     # TAB 3: DATA RECORDS
     with tab3:
-        uploaded_json = st.file_uploader("Upload Digital Health Summary (JSON)", type=['json'])
+        uploaded_json = st.file_uploader("Upload Visit Summary (JSON)", type=['json'])
         if uploaded_json:
             st.json(json.load(uploaded_json))
 
