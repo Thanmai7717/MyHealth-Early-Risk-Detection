@@ -4,10 +4,9 @@ import numpy as np
 import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-
 # 1. PAGE SETUP
 st.set_page_config(page_title="MyHealth AI | Research Dashboard", page_icon="🧬", layout="wide")
 
