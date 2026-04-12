@@ -47,49 +47,58 @@ def build_model_data(patients, conditions, observations, encounters):
         keep_cols = ['Id', 'GENDER', 'RACE', 'BIRTHDATE']
         df = df[keep_cols].copy()
         df['BIRTHDATE'] = pd.to_datetime(df['BIRTHDATE'])
-        df['Age'] = 2026 - df['BIRTHDATE'].dt.year # Updated for 2026 context
+        df['Age'] = 2026 - df['BIRTHDATE'].dt.year
         df['GENDER'] = df['GENDER'].map({'M': 0, 'F': 1})
         df = pd.get_dummies(df, columns=['RACE'], prefix='race', drop_first=True)
         return df.drop(columns=['BIRTHDATE'])
 
     patients_cleaned = clean_demographics(patients)
 
-    # Kidney-Specific Vitals (Creatinine, eGFR, BP, Glucose, HbA1c)
-    # Codes: 2160-0 (Creatinine), 33914-3 (eGFR), 8480-6 (SBP), 4548-4 (HbA1c)
+    # Kidney-Specific Vitals
     relevant_codes = ['2160-0', '33914-3', '8480-6', '4548-4', '2339-0']
     obs_filtered = observations[observations['CODE'].isin(relevant_codes)]
     obs_latest = (obs_filtered.sort_values('DATE')
                   .groupby(['PATIENT', 'DESCRIPTION'])['VALUE']
                   .last().unstack())
     
-    obs_latest.columns = [col.replace(' ', '_').replace('[', '').replace(']', '').lower() for col in obs_latest.columns]
+    # XGBoost clean column names: remove characters that crash the model
+    obs_latest.columns = [col.replace(' ', '_').replace('[', '').replace(']', '')
+                          .replace('(', '').replace(')', '').replace('/', '_').lower() 
+                          for col in obs_latest.columns]
     obs_latest = obs_latest.reset_index().rename(columns={'PATIENT': 'Id'})
 
     # Merge
     df_final = target_df.merge(patients_cleaned, on='Id', how='left')
     df_final = df_final.merge(obs_latest, on='Id', how='left')
     
-    # Fill missing values with median (Better for medical accuracy)
-    df_final = df_final.fillna(df_final.median(numeric_only=True))
-    
     model_data = df_final.drop(columns=['Id'])
     return model_data
 
-# ── 4. TRAIN CKD MODELS ───────────────────────────────────────
+# ── 4. TRAIN CKD MODELS (WITH DATA TYPE FIX) ──────────────────
 @st.cache_resource
 def train_models(_model_data):
     X = _model_data.drop('target', axis=1)
     y = _model_data['target']
 
+    # --- THE DATA TYPE FIX ---
+    # Convert everything to numeric (floats) to prevent the "str" error
+    for col in X.columns:
+        X[col] = pd.to_numeric(X[col], errors='coerce')
+
+    # Fill NaNs with median (safer for medical data than 0)
+    X = X.fillna(X.median())
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y)
 
-    # XGBoost with weight balancing (CKD cases are usually the minority)
+    # Weight balancing for CKD
     ratio = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+
+    # 1. XGBoost
     xgb_model = xgb.XGBClassifier(scale_pos_weight=ratio, eval_metric='logloss', random_state=42)
     xgb_model.fit(X_train, y_train)
     
-    # Lasso
+    # 2. Lasso
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -107,18 +116,25 @@ def train_models(_model_data):
 def get_latest_vital(desc, user_o):
     res = user_o[user_o['DESCRIPTION'].str.lower().str.contains(desc.lower(), na=False)]
     if not res.empty:
-        try: return f"{float(res.iloc[-1]['VALUE']):.1f}"
-        except: return res.iloc[-1]['VALUE']
+        try:
+            return f"{float(res.iloc[-1]['VALUE']):.1f}"
+        except:
+            return res.iloc[-1]['VALUE']
     return "N/A"
 
 # ── 6. MAIN APP ───────────────────────────────────────────────
 try:
     df_p, df_o, df_c, df_e = load_data()
 
-    # Identify CKD patients for the demo selector
+    # Identify CKD patients for demo
     ckd_ids = df_c[df_c['DESCRIPTION'].str.contains('Kidney|Renal', case=False)]['PATIENT'].unique()
     df_p_demo = df_p[df_p['Id'].isin(ckd_ids)].copy()
     df_p_demo['FULL_NAME'] = df_p_demo['FIRST'] + " " + df_p_demo['LAST']
+
+    if df_p_demo.empty:
+        # Fallback to all patients if no CKD match found
+        df_p_demo = df_p.copy()
+        df_p_demo['FULL_NAME'] = df_p_demo['FIRST'] + " " + df_p_demo['LAST']
 
     with st.spinner("Analyzing Kidney Health Data..."):
         model_data = build_model_data(df_p, df_c, df_o, df_e)
@@ -139,32 +155,63 @@ try:
     if tab == "Overview":
         st.title(f"Patient Overview: {patient_name}")
         c1, c2, c3 = st.columns(3)
+        # Use common substrings for matching
         c1.metric("eGFR (Kidney Function)", f"{get_latest_vital('GFR', user_o)} mL/min")
         c2.metric("Creatinine", f"{get_latest_vital('Creatinine', user_o)} mg/dL")
         c3.metric("Systolic BP", f"{get_latest_vital('Systolic', user_o)} mmHg")
 
+        st.divider()
         st.subheader("Active Kidney-Related Diagnoses")
         user_ckd = df_c[(df_c['PATIENT'] == p_id) & (df_c['DESCRIPTION'].str.contains('Kidney|Renal', case=False))]
+        if user_ckd.empty:
+            st.write("No active CKD records found.")
         for cond in user_ckd['DESCRIPTION'].unique():
             st.error(f"● {cond}")
+
+    elif tab == "Vitals Trend":
+        st.title("📈 Vitals History")
+        vital_to_plot = st.selectbox("Select Metric", ["Creatinine", "GFR", "Systolic", "Glucose"])
+        trend_data = user_o[user_o['DESCRIPTION'].str.contains(vital_to_plot, case=False)].copy()
+        trend_data['VALUE'] = pd.to_numeric(trend_data['VALUE'], errors='coerce')
+        trend_data = trend_data.dropna(subset=['VALUE'])
+
+        if not trend_data.empty:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(pd.to_datetime(trend_data['DATE']), trend_data['VALUE'], marker='o')
+            ax.set_title(f"{vital_to_plot} Over Time")
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
+        else:
+            st.warning("No trend data available for this metric.")
 
     elif tab == "Risk Analysis":
         st.title("🤖 CKD Risk AI Interpretation")
         
-        # XGBoost Importance
+        col_acc1, col_acc2 = st.columns(2)
+        col_acc1.metric("XGBoost Accuracy", f"{xgb_acc*100:.1f}%")
+        col_acc2.metric("Lasso Accuracy", f"{lasso_acc*100:.1f}%")
+
+        st.divider()
         st.subheader("Top Biological Risk Drivers (XGBoost)")
         feat_imp = pd.Series(xgb_model.feature_importances_, index=X.columns).sort_values().tail(10)
         fig, ax = plt.subplots()
         feat_imp.plot(kind='barh', color='#007AFF', ax=ax)
         st.pyplot(fig)
         
-        st.info("The model identifies eGFR and Creatinine as the highest weighted predictors for your current kidney risk profile.")
+        st.info("The model weighted eGFR and Creatinine as the highest indicators for kidney risk assessment.")
 
     elif tab == "Reports":
         st.title("📄 Clinical Summary")
-        report = f"REPORT: {patient_name}\nSTATUS: CKD Monitoring\neGFR: {get_latest_vital('GFR', user_o)}\nCreatinine: {get_latest_vital('Creatinine', user_o)}"
-        st.code(report)
-        st.download_button("Download Summary", report, file_name="ckd_report.txt")
+        report_text = f"""
+MYHEALTH CKD REPORT
+-------------------
+Patient: {patient_name}
+Latest eGFR: {get_latest_vital('GFR', user_o)}
+Latest Creatinine: {get_latest_vital('Creatinine', user_o)}
+Latest Systolic BP: {get_latest_vital('Systolic', user_o)}
+"""
+        st.code(report_text, language="text")
+        st.download_button("Download Summary (.txt)", report_text, file_name=f"{patient_name}_ckd_report.txt")
 
 except Exception as e:
     st.error(f"Dashboard Error: {e}")
